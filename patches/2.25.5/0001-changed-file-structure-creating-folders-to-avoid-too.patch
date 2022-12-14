@@ -1,0 +1,102 @@
+From f79953d38e0032ea4e0e6112a5558547ac6cd332 Mon Sep 17 00:00:00 2001
+From: Ricardo Alonso <ralonso@redhat.com>
+Date: Thu, 24 Nov 2022 16:44:15 +0000
+Subject: [PATCH] changed file structure, creating folders to avoid too many
+ files into a single folder
+
+---
+ .gitignore                   |  1 +
+ admin/move_attachments.php   | 12 +++++-
+ config/config_inc.php.sample | 83 ------------------------------------
+ core/file_api.php            | 24 ++++++++++-
+ 4 files changed, 34 insertions(+), 86 deletions(-)
+ create mode 100644 .gitignore
+ delete mode 100644 config/config_inc.php.sample
+
+diff --git a/admin/move_attachments.php b/admin/move_attachments.php
+index 682da75..df34fb3 100644
+--- a/admin/move_attachments.php
++++ b/admin/move_attachments.php
+@@ -194,7 +194,9 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 			$t_data = array();
+ 
+ 			while( $t_row = db_fetch_array( $t_result ) ) {
+-				$t_disk_filename = $t_upload_path . $t_row['diskfile'];
++				# first check if filename is on new format already
++				$t_filepath = adjust_filepath($t_upload_path, $t_row['diskfile']); 
++				$t_disk_filename = $t_filepath . $t_row['diskfile'];
+ 				if ( file_exists( $t_disk_filename ) ) {
+ 					$t_status = 'Disk File Already Exists \'' . $t_disk_filename . '\'';
+ 					$t_failures++;
+@@ -217,7 +219,7 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 						}
+ 						$t_update_result = db_query(
+ 							$t_update_query,
+-							array( $t_upload_path, $t_row['id'] )
++							array( $t_filepath, $t_row['id'] )
+ 						);
+ 
+ 						if( !$t_update_result ) {
+@@ -242,6 +244,9 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 					$t_file['bug_id'] = $t_row['bug_id'];
+ 				}
+ 				$t_data[] = $t_file;
++
++				$t_row = null;
++				gc_collect_cycles();
+ 			}
+ 		}
+ 
+@@ -253,6 +258,9 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 			'data'       => $t_data,
+ 		);
+ 
++		$t_result = null;
++		gc_collect_cycles();
++
+ 	}
+ 	return $t_moved;
+ }
+diff --git a/core/file_api.php b/core/file_api.php
+index 9ccaa70..e344965 100644
+--- a/core/file_api.php
++++ b/core/file_api.php
+@@ -934,6 +934,9 @@ function file_add( $p_bug_id, array $p_file, $p_table = 'bug', $p_title = '', $p
+ 	$t_unique_name = file_generate_unique_name( $t_file_path );
+ 	$t_method = config_get( 'file_upload_method' );
+ 
++	# adjust the path to accomodate the files into smaller folders
++	$t_file_path = adjust_filepath( $t_file_path, $t_unique_name);
++
+ 	switch( $t_method ) {
+ 		case DISK:
+ 			file_ensure_valid_upload_path( $t_file_path );
+@@ -1409,4 +1412,23 @@ function file_get_content_type_override( $p_filename ) {
+  */
+ function file_get_max_file_size() {
+ 	return (int)min( ini_get_number( 'upload_max_filesize' ), ini_get_number( 'post_max_size' ), config_get( 'max_file_size' ) );
+-}
+\ No newline at end of file
++}
++
++/**
++ * Adjust the file path to subdivide the uploaded files into folders. 
++ * 
++ * @param string $p_filepath the path to store the files
++ * @param string $p_filename the name of the file to store
++ * @return string the adjusted file path if necessary. 
++ * 
++ */
++function adjust_filepath($p_filepath, $p_filename){
++	$t_search = DIRECTORY_SEPARATOR . substr( $p_filename, 0, 2 ); 
++	if (strpos( $p_filepath, $t_search) === false ){
++		$t_filepath = $p_filepath . substr( $p_filename, 0, 2 ) . DIRECTORY_SEPARATOR;
++		if ( !file_exists( $t_filepath ) )
++			mkdir( $t_filepath, 0700 );
++		return $t_filepath;
++	}
++	return $p_filepath;
++}
+-- 
+2.38.1
+
