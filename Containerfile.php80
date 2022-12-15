@@ -9,7 +9,8 @@ ENV MANTIS_VERSION=2.25.5 \
     PHP_UPLOAD_MAX_FILESIZE=4M \
     PHP_MEMORY_LIMIT=1024M \
     PHP_DISPLAY_ERRORS=Off \
-    REQUEST_TIMEOUT=300
+    PHP_MAX_EXECUTION_TIME=30 \
+    HTTPD_REQUEST_TIMEOUT=300
 RUN dnf module enable -y php:$PHP_VERSION && \
     INSTALL_PKGS="php php-mysqlnd php-pgsql php-bcmath openssl \
                   php-gd php-intl php-ldap php-mbstring php-pdo \

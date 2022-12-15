@@ -14,6 +14,7 @@ replace_param "s/^display_errors.*/display_errors = $PHP_DISPLAY_ERRORS/" /etc/p
 replace_param "s/^upload_max_filesize.*/upload_max_filesize = $PHP_UPLOAD_MAX_FILESIZE/" /etc/php.ini
 replace_param "s/^post_max_size.*/post_max_size = $PHP_UPLOAD_MAX_FILESIZE/" /etc/php.ini
 replace_param "s/^memory_limit.*/memory_limit = $PHP_MEMORY_LIMIT/" /etc/php.ini
+replace_param "s/^max_execution_time.*/max_execution_time = $PHP_MAX_EXECUTION_TIME/" /etc/php.ini
 
 # Timeout
-echo "Timeout $REQUEST_TIMEOUT" >> /etc/httpd/conf.d/timeout.conf
+echo "Timeout $HTTPD_REQUEST_TIMEOUT" >> /etc/httpd/conf.d/timeout.conf
