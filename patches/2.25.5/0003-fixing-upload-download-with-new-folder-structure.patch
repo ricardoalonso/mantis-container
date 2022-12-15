@@ -1,0 +1,69 @@
+From 1a07a9b95f1c6de3145063ecfe2218bd41e05739 Mon Sep 17 00:00:00 2001
+From: Ricardo Alonso <ricardo.alonso@niit.com>
+Date: Wed, 14 Dec 2022 09:50:46 +0200
+Subject: [PATCH] fixing upload/download with new folder structure
+
+---
+ core/bug_api.php  | 2 +-
+ core/file_api.php | 3 ++-
+ file_download.php | 3 ++-
+ 3 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/core/bug_api.php b/core/bug_api.php
+index 9cc5711..2f2be56 100644
+--- a/core/bug_api.php
++++ b/core/bug_api.php
+@@ -1763,7 +1763,7 @@ function bug_get_bugnote_stats( $p_bug_id ) {
+  */
+ function bug_get_attachments( $p_bug_id ) {
+ 	db_param_push();
+-	$t_query = 'SELECT id, title, diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
++	$t_query = 'SELECT id, title, concat(folder, diskfile) as diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
+ 		                FROM {bug_file}
+ 		                WHERE bug_id=' . db_param() . '
+ 		                ORDER BY date_added';
+diff --git a/core/file_api.php b/core/file_api.php
+index e344965..c25c42e 100644
+--- a/core/file_api.php
++++ b/core/file_api.php
+@@ -671,6 +671,7 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 
+ 	$c_file_id = (int)$p_file_id;
+ 	$t_filename = file_get_field( $p_file_id, 'filename', $p_table );
++	$t_folder = file_get_field( $p_file_id, 'folder', $p_table );
+ 	$t_diskfile = file_get_field( $p_file_id, 'diskfile', $p_table );
+ 
+ 	if( $p_table == 'bug' ) {
+@@ -681,7 +682,7 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 	}
+ 
+ 	if( DISK == $t_upload_method ) {
+-		$t_local_disk_file = file_normalize_attachment_path( $t_diskfile, $t_project_id );
++		$t_local_disk_file = file_normalize_attachment_path( $t_folder . $t_diskfile, $t_project_id );
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			file_delete_local( $t_local_disk_file );
+ 		}
+diff --git a/file_download.php b/file_download.php
+index 005fe4d..87fa5f3 100644
+--- a/file_download.php
++++ b/file_download.php
+@@ -102,6 +102,7 @@ if( false === $t_row ) {
+ /**
+  * @var int    $v_bug_id
+  * @var int    $v_project_id
++ * @var string $v_folder
+  * @var string $v_diskfile
+  * @var string $v_filename
+  * @var int    $v_filesize
+@@ -177,7 +178,7 @@ $t_file_info_type = false;
+ 
+ switch( $t_upload_method ) {
+ 	case DISK:
+-		$t_local_disk_file = file_normalize_attachment_path( $v_diskfile, $t_project_id );
++		$t_local_disk_file = file_normalize_attachment_path( $v_folder . $v_diskfile, $t_project_id );
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			$t_file_info_type = file_get_mime_type( $t_local_disk_file );
+ 		}
+-- 
+2.38.1
+

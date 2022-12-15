@@ -17,7 +17,6 @@ RUN dnf module enable -y php:$PHP_VERSION && \
                   php-gmp php-pecl-apcu php-pecl-zip mod_ssl hostname \
                   patch " && \
     dnf install -y --setopt=tsflags=nodocs $INSTALL_PKGS && \
-    dnf reinstall -y --setopt=tsflags=nodocs tzdata && \
     rpm -V $INSTALL_PKGS && \
     dnf clean all --enablerepo='*' && \
     rm -rf /var/cache/dnf /var/log/dnf*
