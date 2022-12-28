@@ -10,13 +10,13 @@ then
     echo "Admin enabled."
     if [ -d "/mantis/admin/" ]
     then
-        mv /mantis/admin .
+        mv /mantis/admin mantis/
     fi
 else
     echo "Admin disabled."
-    if [ -d "./admin/" ]
+    if [ -d "mantis/admin/" ]
     then
-        mv admin /mantis/
+        mv mantis/admin /mantis/
     fi
 fi
 

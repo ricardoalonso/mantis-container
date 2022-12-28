@@ -24,6 +24,7 @@ RUN dnf module enable -y php:$PHP_VERSION && \
 WORKDIR /var/www/html/
 ADD ./bin /usr/local/bin
 ADD ./patches ./patches
+ADD ./conf.d /etc/httpd/conf.d
 RUN install-mantis.sh
 USER apache
 CMD ["run.sh"]

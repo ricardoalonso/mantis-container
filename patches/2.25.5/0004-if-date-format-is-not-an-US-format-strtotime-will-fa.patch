@@ -1,0 +1,27 @@
+From b7c4350fefeb202e58ada34f99561099643eebac Mon Sep 17 00:00:00 2001
+From: Ricardo Alonso <ralonso@redhat.com>
+Date: Mon, 19 Dec 2022 11:38:04 +0000
+Subject: [PATCH] if date format is not an US format, strtotime will fail. So
+ first create a datetimeimmutable with the user specified format and perform
+ the string conversion
+
+---
+ core/version_api.php | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/version_api.php b/core/version_api.php
+index d2e97e7..4f8060f 100644
+--- a/core/version_api.php
++++ b/core/version_api.php
+@@ -111,7 +111,7 @@ class VersionData {
+ 					if( $p_value == '' ) {
+ 						$t_value = date_get_null();
+ 					} else {
+-						$t_value = strtotime( $p_value );
++						$t_value = DateTimeImmutable::createFromFormat( config_get('normal_date_format') , $p_value)->getTimestamp();
+ 						if( $t_value === false ) {
+ 							throw new ClientException(
+ 								"Invalid date format '$p_value'",
+-- 
+2.38.1
+
