@@ -1,0 +1,146 @@
+diff --git a/admin/move_attachments.php b/admin/move_attachments.php
+index b522d4c84..94a04312e 100644
+--- a/admin/move_attachments.php
++++ b/admin/move_attachments.php
+@@ -194,8 +194,9 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 			$t_data = array();
+ 
+ 			while( $t_row = db_fetch_array( $t_result ) ) {
+-				$t_disk_filename = $t_upload_path . $t_row['diskfile'];
+-				if ( file_exists( $t_disk_filename ) ) {
++				# first check if filename is on new format already
++				$t_filepath = adjust_filepath($t_upload_path, $t_row['diskfile']); 
++				$t_disk_filename = $t_filepath . $t_row['diskfile'];				if ( file_exists( $t_disk_filename ) ) {
+ 					$t_status = 'Disk File Already Exists \'' . $t_disk_filename . '\'';
+ 					$t_failures++;
+ 				} else {
+@@ -217,7 +218,7 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 						}
+ 						$t_update_result = db_query(
+ 							$t_update_query,
+-							array( $t_upload_path, $t_row['id'] )
++							array( $t_filepath, $t_row['id'] )
+ 						);
+ 
+ 						if( !$t_update_result ) {
+@@ -242,6 +243,8 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 					$t_file['bug_id'] = $t_row['bug_id'];
+ 				}
+ 				$t_data[] = $t_file;
++				$t_row = null;
++				gc_collect_cycles();
+ 			}
+ 		}
+ 
+@@ -252,6 +255,8 @@ function move_attachments_to_disk( $p_type, array $p_projects ) {
+ 			'failed'     => $t_failures,
+ 			'data'       => $t_data,
+ 		);
++		$t_result = null;
++		gc_collect_cycles();
+ 
+ 	}
+ 	return $t_moved;
+diff --git a/core/bug_api.php b/core/bug_api.php
+index b60198bea..d843b0ed7 100644
+--- a/core/bug_api.php
++++ b/core/bug_api.php
+@@ -1910,7 +1910,7 @@ function bug_get_attachments( $p_bug_id ) {
+ 
+ 	db_param_push();
+ 
+-	$t_query = 'SELECT id, title, diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
++	$t_query = 'SELECT id, title, concat(folder, diskfile) as diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
+ 		                FROM {bug_file}
+ 		                WHERE bug_id=' . db_param() . '
+ 		                ORDER BY date_added';
+diff --git a/core/file_api.php b/core/file_api.php
+index ea47ba327..97f699e44 100644
+--- a/core/file_api.php
++++ b/core/file_api.php
+@@ -718,6 +718,7 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 
+ 	$c_file_id = (int)$p_file_id;
+ 	$t_filename = file_get_field( $p_file_id, 'filename', $p_table );
++	$t_folder = file_get_field( $p_file_id, 'folder', $p_table );
+ 	$t_diskfile = file_get_field( $p_file_id, 'diskfile', $p_table );
+ 
+ 	if( $p_table == 'bug' ) {
+@@ -728,7 +729,7 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 	}
+ 
+ 	if( DISK == $t_upload_method ) {
+-		$t_local_disk_file = file_normalize_attachment_path( $t_diskfile, $t_project_id );
++		$t_local_disk_file = file_normalize_attachment_path( $t_folder . $t_diskfile, $t_project_id );
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			file_delete_local( $t_local_disk_file );
+ 		}
+@@ -1006,6 +1007,10 @@ function file_add( $p_bug_id, array $p_file, $p_table = 'bug', $p_title = '', $p
+ 	$t_unique_name = file_generate_unique_name( $t_file_path );
+ 	$t_method = config_get( 'file_upload_method' );
+ 
++	# adjust the path to accomodate the files into smaller folders
++	$t_file_path = adjust_filepath( $t_file_path, $t_unique_name);
++
++
+ 	switch( $t_method ) {
+ 		case DISK:
+ 			file_ensure_valid_upload_path( $t_file_path );
+@@ -1514,3 +1519,22 @@ function file_get_max_file_size() {
+ 		config_get( 'max_file_size' )
+ 	);
+ }
++
++/**
++ * Adjust the file path to subdivide the uploaded files into folders. 
++ * 
++ * @param string $p_filepath the path to store the files
++ * @param string $p_filename the name of the file to store
++ * @return string the adjusted file path if necessary. 
++ * 
++ */
++function adjust_filepath($p_filepath, $p_filename){
++	$t_search = DIRECTORY_SEPARATOR . substr( $p_filename, 0, 2 ); 
++	if (strpos( $p_filepath, $t_search) === false ){
++		$t_filepath = $p_filepath . substr( $p_filename, 0, 2 ) . DIRECTORY_SEPARATOR;
++		if ( !file_exists( $t_filepath ) )
++			mkdir( $t_filepath, 0700 );
++		return $t_filepath;
++	}
++	return $p_filepath;
++}
+\ No newline at end of file
+diff --git a/file_download.php b/file_download.php
+index 3fc25f427..53e387207 100644
+--- a/file_download.php
++++ b/file_download.php
+@@ -102,6 +102,7 @@ if( false === $t_row ) {
+ /**
+  * @var int    $v_bug_id
+  * @var int    $v_project_id
++ * @var string $v_folder
+  * @var string $v_diskfile
+  * @var string $v_filename
+  * @var int    $v_filesize
+@@ -162,7 +163,7 @@ $t_file_info_type = false;
+ 
+ switch( $t_upload_method ) {
+ 	case DISK:
+-		$t_local_disk_file = file_normalize_attachment_path( $v_diskfile, $t_project_id );
++		$t_local_disk_file = file_normalize_attachment_path( $v_folder . $v_diskfile, $t_project_id );
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			$t_file_info_type = file_get_mime_type( $t_local_disk_file );
+ 		}
+diff --git a/manage_user_create_page.php b/manage_user_create_page.php
+index f6905f646..c0b00aaf2 100644
+--- a/manage_user_create_page.php
++++ b/manage_user_create_page.php
+@@ -103,7 +103,7 @@ print_manage_menu( 'manage_user_create_page.php' );
+ 				</td>
+ 			</tr><?php
+ 			}
+-			if( OFF == config_get( 'send_reset_password' ) )  { ?>
++			if( !$t_ldap && OFF == config_get( 'send_reset_password' ) )  { ?>
+ 			<tr>
+ 				<td class="category">
+ 					<?php echo lang_get( 'password' ) ?>

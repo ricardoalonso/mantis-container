@@ -1,0 +1,678 @@
+diff --git a/admin/reorganize_attachments.php b/admin/reorganize_attachments.php
+new file mode 100644
+index 000000000..58c8e7650
+--- /dev/null
++++ b/admin/reorganize_attachments.php
+@@ -0,0 +1,217 @@
++<?php
++# MantisBT - A PHP based bugtracking system
++
++# MantisBT is free software: you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation, either version 2 of the License, or
++# (at your option) any later version.
++#
++# MantisBT is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with MantisBT.  If not, see <http://www.gnu.org/licenses/>.
++
++/**
++ * Relocates attachments already on disk to match the configured subdirectory
++ * layout.
++ *
++ * Changing $g_file_upload_subdirectory_depth only affects new uploads;
++ * attachments already on disk keep working where they are. This script brings
++ * them into line with the current configuration, in either direction: raising
++ * the depth moves files down into subdirectories, and setting it back to 0
++ * moves them up into the upload directory again.
++ *
++ * Each file is moved and its folder column updated one at a time, so the run
++ * can be interrupted and restarted without leaving the database and the disk
++ * disagreeing.
++ *
++ * Usage:
++ *   php admin/reorganize_attachments.php [--dry-run] [--quiet]
++ *
++ * @package MantisBT
++ * @copyright Copyright 2026  MantisBT Team - mantisbt-dev@lists.sourceforge.net
++ * @link http://www.mantisbt.org
++ */
++
++require_once( dirname( __DIR__ ) . '/core.php' );
++
++if( php_sapi_name() != 'cli' ) {
++	echo basename( __FILE__ ) . " must be run from the command line.\n";
++	exit( 1 );
++}
++
++set_time_limit( 0 );
++
++$g_dry_run = in_array( '--dry-run', $argv, true );
++$g_quiet = in_array( '--quiet', $argv, true );
++
++foreach( array_slice( $argv, 1 ) as $t_arg ) {
++	if( !in_array( $t_arg, array( '--dry-run', '--quiet' ), true ) ) {
++		echo "Unknown option '$t_arg'.\n";
++		echo "Usage: php " . basename( __FILE__ ) . " [--dry-run] [--quiet]\n";
++		exit( 1 );
++	}
++}
++
++if( DISK != config_get_global( 'file_upload_method' ) ) {
++	echo "file_upload_method is not DISK; there is nothing on disk to move.\n";
++	exit( 1 );
++}
++
++/**
++ * Writes a progress message unless running quietly.
++ *
++ * @param string $p_message The message.
++ *
++ * @return void
++ */
++function reorg_log( $p_message ) {
++	global $g_quiet;
++	if( !$g_quiet ) {
++		echo $p_message . "\n";
++	}
++}
++
++/**
++ * Determines the upload directory configured for a project.
++ *
++ * @param int $p_project_id The project id.
++ *
++ * @return string The upload path, with a trailing directory separator.
++ */
++function reorg_project_path( $p_project_id ) {
++	static $s_paths = array();
++
++	if( !isset( $s_paths[$p_project_id] ) ) {
++		$t_path = '';
++		if( $p_project_id != ALL_PROJECTS ) {
++			$t_path = project_get_field( $p_project_id, 'file_path' );
++		}
++		if( is_blank( $t_path ) ) {
++			$t_path = config_get_global( 'absolute_path_default_upload_folder' );
++		}
++		$s_paths[$p_project_id] = $t_path;
++	}
++
++	return $s_paths[$p_project_id];
++}
++
++/**
++ * Relocates the attachments held in one table.
++ *
++ * @param string $p_table 'bug' or 'project'.
++ *
++ * @return array Counts keyed 'moved', 'skipped' and 'missing'.
++ */
++function reorg_table( $p_table ) {
++	global $g_dry_run;
++
++	$t_counts = array( 'moved' => 0, 'skipped' => 0, 'missing' => 0 );
++
++	if( $p_table == 'bug' ) {
++		$t_query = new DbQuery(
++			'SELECT f.id, f.folder, f.diskfile, b.project_id
++			FROM {bug_file} f JOIN {bug} b ON b.id = f.bug_id
++			ORDER BY f.id'
++		);
++	} else {
++		$t_query = new DbQuery(
++			'SELECT id, folder, diskfile, project_id FROM {project_file} ORDER BY id'
++		);
++	}
++	$t_query->execute();
++
++	while( $t_row = $t_query->fetch() ) {
++		$t_basename = basename( $t_row['diskfile'] );
++		if( is_blank( $t_basename ) ) {
++			continue;
++		}
++
++		$t_upload_path = reorg_project_path( (int)$t_row['project_id'] );
++		$t_target_dir = $t_upload_path . file_subdirectory_path( $t_basename );
++		$t_target = $t_target_dir . $t_basename;
++
++		$t_source = file_get_disk_path( $t_row, (int)$t_row['project_id'] );
++
++		if( $t_source == $t_target && $t_row['folder'] == $t_target_dir ) {
++			$t_counts['skipped']++;
++			continue;
++		}
++
++		if( !file_exists( $t_source ) ) {
++			reorg_log( "  MISSING  $t_source (attachment {$t_row['id']})" );
++			$t_counts['missing']++;
++			continue;
++		}
++
++		if( $g_dry_run ) {
++			reorg_log( "  would move $t_source -> $t_target" );
++			$t_counts['moved']++;
++			continue;
++		}
++
++		# Create the destination first: if the run is interrupted between the
++		# rename and the update, the file is found again on the next pass
++		# because file_get_disk_path() falls back to deriving the location.
++		if( $t_source != $t_target ) {
++			file_ensure_upload_subdirectory( $t_upload_path, $t_basename );
++			if( file_exists( $t_target ) ) {
++				reorg_log( "  CONFLICT $t_target already exists (attachment {$t_row['id']})" );
++				$t_counts['skipped']++;
++				continue;
++			}
++			if( !rename( $t_source, $t_target ) ) {
++				reorg_log( "  FAILED   $t_source -> $t_target (attachment {$t_row['id']})" );
++				$t_counts['missing']++;
++				continue;
++			}
++		}
++
++		$t_update = new DbQuery(
++			'UPDATE {' . $p_table . '_file} SET folder = :folder WHERE id = :id'
++		);
++		$t_update->bind( 'folder', $t_target_dir );
++		$t_update->bind( 'id', (int)$t_row['id'] );
++		$t_update->execute();
++
++		$t_counts['moved']++;
++	}
++
++	return $t_counts;
++}
++
++$t_depth = (int)config_get_global( 'file_upload_subdirectory_depth' );
++$t_width = (int)config_get_global( 'file_upload_subdirectory_width' );
++
++reorg_log( 'Target layout: '
++	. ( $t_depth < 1
++		? 'flat (no subdirectories)'
++		: "$t_depth level(s) of $t_width character(s)" )
++);
++if( $g_dry_run ) {
++	reorg_log( 'Dry run: no files will be moved.' );
++}
++
++$t_total = array( 'moved' => 0, 'skipped' => 0, 'missing' => 0 );
++foreach( array( 'bug', 'project' ) as $t_table ) {
++	reorg_log( "Processing {$t_table}_file" );
++	$t_counts = reorg_table( $t_table );
++	foreach( $t_counts as $t_key => $t_value ) {
++		$t_total[$t_key] += $t_value;
++	}
++	reorg_log( "  moved {$t_counts['moved']}, "
++		. "already in place {$t_counts['skipped']}, "
++		. "unresolved {$t_counts['missing']}"
++	);
++}
++
++reorg_log( '' );
++reorg_log( "Total: moved {$t_total['moved']}, "
++	. "already in place {$t_total['skipped']}, "
++	. "unresolved {$t_total['missing']}"
++);
++
++exit( $t_total['missing'] > 0 ? 2 : 0 );
+diff --git a/api/soap/mc_file_api.php b/api/soap/mc_file_api.php
+index e132189be..c56c006b7 100644
+--- a/api/soap/mc_file_api.php
++++ b/api/soap/mc_file_api.php
+@@ -109,6 +109,8 @@ function mci_file_add( $p_id, $p_name, $p_content, $p_file_type, $p_table, $p_ti
+ 			}
+ 
+ 			file_ensure_valid_upload_path( $t_file_path );
++			$t_file_path = file_ensure_upload_subdirectory( $t_file_path, $t_unique_name );
++			$t_disk_file_name = $t_file_path . $t_unique_name;
+ 
+ 			if( !file_exists( $t_disk_file_name ) ) {
+ 				mci_file_write_local( $t_disk_file_name, $p_content );
+@@ -211,7 +213,7 @@ function mci_file_get( $p_file_id, $p_type, $p_user_id ) {
+ 		$t_project_id = bug_get_field( $t_bug_id, 'project_id' );
+ 	}
+ 
+-	$t_diskfile = file_normalize_attachment_path( $t_row['diskfile'], $t_project_id );
++	$t_diskfile = file_get_disk_path( $t_row, $t_project_id );
+ 	$t_content = $t_row['content'];
+ 
+ 	# Check access rights
+diff --git a/config_defaults_inc.php b/config_defaults_inc.php
+index 4891157fd..bf315196b 100644
+--- a/config_defaults_inc.php
++++ b/config_defaults_inc.php
+@@ -2295,6 +2295,46 @@ $g_dropzone_enabled = ON;
+  */
+ $g_attachments_file_permissions = 0400;
+ 
++/**
++ * Number of levels of subdirectories used to store uploaded files on disk.
++ *
++ * With the default of 0, every attachment for a project is written directly
++ * into that project's upload directory. Installations accumulating large
++ * numbers of attachments can raise this to spread them across subdirectories
++ * named after the leading characters of the disk file name, which keeps
++ * directory listings small and lets incremental backup tools skip subtrees
++ * that have not changed.
++ *
++ * Each level consumes $g_file_upload_subdirectory_width characters, so a depth
++ * of 1 with the default width gives 256 directories ('00' to 'ff'), and a
++ * depth of 2 gives 65536 ('00/00' to 'ff/ff').
++ *
++ * This only affects newly uploaded files. Attachments already on disk stay
++ * where they are and keep working, because each one records its own location;
++ * see admin/move_attachments.php to relocate them.
++ *
++ * Disk file names are normally 32 character hashes, but an installation that
++ * has imported data from another tracker may hold other formats, such as
++ * UUIDs, which offer only 8 usable characters. A name too short to satisfy the
++ * requested depth is stored directly in the upload directory.
++ *
++ * @see $g_file_upload_subdirectory_width
++ *
++ * @global int $g_file_upload_subdirectory_depth
++ */
++$g_file_upload_subdirectory_depth = 0;
++
++/**
++ * Number of characters of the disk file name used for each subdirectory level.
++ *
++ * Has no effect unless $g_file_upload_subdirectory_depth is at least 1.
++ *
++ * @see $g_file_upload_subdirectory_depth
++ *
++ * @global int $g_file_upload_subdirectory_width
++ */
++$g_file_upload_subdirectory_width = 2;
++
+ /**
+  * Maximum file size that can be uploaded (in bytes).
+  *
+diff --git a/core/bug_api.php b/core/bug_api.php
+index cb3caa7ee..c4875b4a7 100644
+--- a/core/bug_api.php
++++ b/core/bug_api.php
+@@ -1914,7 +1914,7 @@ function bug_get_attachments( $p_bug_id ) {
+ 
+ 	db_param_push();
+ 
+-	$t_query = 'SELECT id, title, diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
++	$t_query = 'SELECT id, title, folder, diskfile, filename, filesize, file_type, date_added, user_id, bugnote_id
+ 		                FROM {bug_file}
+ 		                WHERE bug_id=' . db_param() . '
+ 		                ORDER BY date_added';
+diff --git a/core/file_api.php b/core/file_api.php
+index 479e3b454..3a8f10c66 100644
+--- a/core/file_api.php
++++ b/core/file_api.php
+@@ -466,6 +466,60 @@ function file_normalize_attachment_path( $p_diskfile, $p_project_id ) {
+ 	return $p_diskfile;
+ }
+ 
++/**
++ * Determines the full path to an attachment held on disk.
++ *
++ * The `folder` column records where the file was actually written, which is
++ * not necessarily where the current configuration would put it: a project's
++ * file path can be changed at any time and existing attachments are not moved.
++ * When `folder` is set and the file is there, it wins; otherwise we fall back
++ * to deriving the path from configuration, which also covers rows predating
++ * the `folder` column and files that have been relocated by hand.
++ *
++ * @param array $p_file_row    A {bug_file} or {project_file} row. The
++ *                             `diskfile` column is required, `folder` is used
++ *                             when present.
++ * @param int   $p_project_id  The project the attachment belongs to.
++ *
++ * @return string The full path to the attachment.
++ */
++function file_get_disk_path( array $p_file_row, $p_project_id ) {
++	$t_diskfile = $p_file_row['diskfile'];
++	$t_basename = basename( $t_diskfile );
++
++	if( !empty( $p_file_row['folder'] ) ) {
++		$t_path = $p_file_row['folder'] . $t_basename;
++		if( file_exists( $t_path ) ) {
++			return $t_path;
++		}
++	}
++
++	# A reorganisation interrupted between moving a file and recording its new
++	# location leaves it in the subdirectory the configured layout calls for,
++	# while folder still names the old one. Look there before giving up, so
++	# that an interrupted run does not make attachments unreachable.
++	$t_subdirectory = file_subdirectory_path( $t_basename );
++	if( $t_subdirectory !== '' ) {
++		$t_upload_paths = array();
++		if( $p_project_id != ALL_PROJECTS ) {
++			$t_upload_paths[] = project_get_field( $p_project_id, 'file_path' );
++		}
++		$t_upload_paths[] = config_get_global( 'absolute_path_default_upload_folder' );
++
++		foreach( $t_upload_paths as $t_upload_path ) {
++			if( is_blank( $t_upload_path ) ) {
++				continue;
++			}
++			$t_path = file_path_combine( $t_upload_path, $t_subdirectory . $t_basename );
++			if( file_exists( $t_path ) ) {
++				return $t_path;
++			}
++		}
++	}
++
++	return file_normalize_attachment_path( $t_diskfile, $p_project_id );
++}
++
+ /**
+  * Gets an array of attachments that are visible to the currently logged in user.
+  *
+@@ -515,7 +569,7 @@ function file_get_visible_attachments( $p_bug_id ) {
+ 		$t_id = (int)$t_row['id'];
+ 		$t_filename = $t_row['filename'];
+ 		$t_filesize = (int)$t_row['filesize'];
+-		$t_diskfile = file_normalize_attachment_path( $t_row['diskfile'], bug_get_field( $p_bug_id, 'project_id' ) );
++		$t_diskfile = file_get_disk_path( $t_row, bug_get_field( $p_bug_id, 'project_id' ) );
+ 		$t_date_added = $t_row['date_added'];
+ 
+ 		$t_attachment = array();
+@@ -581,7 +635,7 @@ function file_delete_attachments( $p_bug_id ) {
+ 
+ 	# Delete files from disk
+ 	db_param_push();
+-	$t_query = 'SELECT diskfile, filename FROM {bug_file} WHERE bug_id=' . db_param();
++	$t_query = 'SELECT folder, diskfile, filename FROM {bug_file} WHERE bug_id=' . db_param();
+ 	$t_result = db_query( $t_query, array( $p_bug_id ) );
+ 
+ 	$t_file_count = db_num_rows( $t_result );
+@@ -593,7 +647,7 @@ function file_delete_attachments( $p_bug_id ) {
+ 		for( $i = 0; $i < $t_file_count; $i++ ) {
+ 			$t_row = db_fetch_array( $t_result );
+ 
+-			$t_local_diskfile = file_normalize_attachment_path( $t_row['diskfile'], bug_get_field( $p_bug_id, 'project_id' ) );
++			$t_local_diskfile = file_get_disk_path( $t_row, bug_get_field( $p_bug_id, 'project_id' ) );
+ 			file_delete_local( $t_local_diskfile );
+ 		}
+ 	}
+@@ -658,7 +712,7 @@ function file_delete_project_files( $p_project_id ) {
+ 	if( DISK == $t_method ) {
+ 		# Delete files from disk
+ 		db_param_push();
+-		$t_query = 'SELECT diskfile, filename FROM {project_file} WHERE project_id=' . db_param();
++		$t_query = 'SELECT folder, diskfile, filename FROM {project_file} WHERE project_id=' . db_param();
+ 		$t_result = db_query( $t_query, array( (int)$p_project_id ) );
+ 
+ 		$t_file_count = db_num_rows( $t_result );
+@@ -666,7 +720,7 @@ function file_delete_project_files( $p_project_id ) {
+ 		for( $i = 0;$i < $t_file_count;$i++ ) {
+ 			$t_row = db_fetch_array( $t_result );
+ 
+-			$t_local_diskfile = file_normalize_attachment_path( $t_row['diskfile'], $p_project_id );
++			$t_local_diskfile = file_get_disk_path( $t_row, $p_project_id );
+ 			file_delete_local( $t_local_diskfile );
+ 		}
+ 	}
+@@ -730,6 +784,7 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 	$c_file_id = (int)$p_file_id;
+ 	$t_filename = file_get_field( $p_file_id, 'filename', $p_table );
+ 	$t_diskfile = file_get_field( $p_file_id, 'diskfile', $p_table );
++	$t_folder = file_get_field( $p_file_id, 'folder', $p_table );
+ 
+ 	if( $p_table == 'bug' ) {
+ 		$t_bug_id = file_get_field( $p_file_id, 'bug_id', $p_table );
+@@ -739,7 +794,10 @@ function file_delete( $p_file_id, $p_table = 'bug', $p_bugnote_id = 0 ) {
+ 	}
+ 
+ 	if( DISK == $t_upload_method ) {
+-		$t_local_disk_file = file_normalize_attachment_path( $t_diskfile, $t_project_id );
++		$t_local_disk_file = file_get_disk_path(
++			array( 'folder' => $t_folder, 'diskfile' => $t_diskfile ),
++			$t_project_id
++		);
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			file_delete_local( $t_local_disk_file );
+ 		}
+@@ -828,6 +886,92 @@ function file_generate_unique_name( $p_filepath ) {
+ 	return $t_string;
+ }
+ 
++/**
++ * Builds the subdirectory an attachment is stored under, relative to the
++ * upload directory.
++ *
++ * Attachments are spread over subdirectories named after the leading
++ * characters of the disk file name, so that installations with very large
++ * numbers of attachments do not end up with a single enormous directory.
++ * Deriving the subdirectory from the name itself rather than from a separate
++ * hash keeps the mapping reversible: a file can be located from its name alone
++ * without consulting the database.
++ *
++ * Returns an empty string when subdirectories are disabled, or when the name
++ * is too short to satisfy the configured depth. Only the leading run of
++ * hexadecimal characters is used: names are normally 32 character hashes, but
++ * an installation may hold other formats, such as UUIDs imported from another
++ * tracker, and the separators in those must not end up in directory names.
++ *
++ * @param string $p_filename The disk file name.
++ *
++ * @return string The relative subdirectory, with a trailing directory
++ *                separator, or an empty string.
++ */
++function file_subdirectory_path( $p_filename ) {
++	$t_depth = (int)config_get_global( 'file_upload_subdirectory_depth' );
++	$t_width = (int)config_get_global( 'file_upload_subdirectory_width' );
++
++	if( $t_depth < 1 || $t_width < 1 ) {
++		return '';
++	}
++
++	if( !preg_match( '/^[0-9a-fA-F]+/', $p_filename, $t_matches ) ) {
++		return '';
++	}
++	$t_usable = $t_matches[0];
++
++	if( strlen( $t_usable ) < $t_depth * $t_width ) {
++		return '';
++	}
++
++	$t_path = '';
++	for( $i = 0; $i < $t_depth; $i++ ) {
++		$t_path .= substr( $t_usable, $i * $t_width, $t_width ) . DIRECTORY_SEPARATOR;
++	}
++
++	return $t_path;
++}
++
++/**
++ * Determines the directory an attachment should be written to, creating it if
++ * necessary.
++ *
++ * New subdirectories inherit the upload directory's permissions, so that a
++ * setup granting access to, say, a backup account keeps working below it.
++ *
++ * @param string $p_upload_path The project's upload path, with a trailing
++ *                              directory separator.
++ * @param string $p_filename    The disk file name.
++ *
++ * @return string The directory to write to, with a trailing directory separator.
++ *
++ * @throws ServiceException
++ */
++function file_ensure_upload_subdirectory( $p_upload_path, $p_filename ) {
++	$t_subdirectory = file_subdirectory_path( $p_filename );
++	if( $t_subdirectory === '' ) {
++		return $p_upload_path;
++	}
++
++	$t_path = $p_upload_path . $t_subdirectory;
++	if( !is_dir( $t_path ) ) {
++		$t_mode = @fileperms( $p_upload_path );
++		$t_mode = ( $t_mode === false ) ? 0700 : ( $t_mode & 0777 );
++
++		# Concurrent uploads race to create the same subdirectory, so a failure
++		# only matters if the directory still is not there afterwards.
++		if( !@mkdir( $t_path, $t_mode, true ) && !is_dir( $t_path ) ) {
++			throw new ServiceException(
++				"Unable to create upload directory '$t_path'",
++				ERROR_FILE_INVALID_UPLOAD_PATH
++			);
++		}
++	}
++
++	return $t_path;
++}
++
+ /**
+  * Validates that the given disk file name identifier is unique.
+  *
+@@ -1020,6 +1164,7 @@ function file_add( $p_bug_id, array $p_file, $p_table = 'bug', $p_title = '', $p
+ 	switch( $t_method ) {
+ 		case DISK:
+ 			file_ensure_valid_upload_path( $t_file_path );
++			$t_file_path = file_ensure_upload_subdirectory( $t_file_path, $t_unique_name );
+ 
+ 			$t_disk_file_name = $t_file_path . $t_unique_name;
+ 			if( !file_exists( $t_disk_file_name ) ) {
+@@ -1330,7 +1475,7 @@ function file_get_content( $p_file_id, $p_type = 'bug' ) {
+ 
+ 	switch( config_get( 'file_upload_method' ) ) {
+ 		case DISK:
+-			$t_local_disk_file = file_normalize_attachment_path( $t_row['diskfile'], $t_project_id );
++			$t_local_disk_file = file_get_disk_path( $t_row, $t_project_id );
+ 
+ 			if( file_exists( $t_local_disk_file ) ) {
+ 				$t_file_info_type = file_get_mime_type( $t_local_disk_file );
+@@ -1382,18 +1527,28 @@ function file_move_bug_attachments( $p_bug_id, $p_project_id_to ) {
+ 		return;
+ 	}
+ 
+-	$t_path_from = project_get_field( $t_project_id_from, 'file_path' );
+-	if( is_blank( $t_path_from ) ) {
+-		$t_path_from = config_get_global( 'absolute_path_default_upload_folder' );
+-	}
+-	file_ensure_valid_upload_path( $t_path_from );
+ 	$t_path_to = project_get_field( $p_project_id_to, 'file_path' );
+ 	if( is_blank( $t_path_to ) ) {
+ 		$t_path_to = config_get_global( 'absolute_path_default_upload_folder' );
+ 	}
+ 	file_ensure_valid_upload_path( $t_path_to );
+-	if( $t_path_from == $t_path_to ) {
+-		return;
++
++	# Each attachment's source is the folder it was actually written to, not
++	# the source project's configured path: a project's file_path can be
++	# changed at any time without moving the files already on disk, and the
++	# two then disagree.
++	$t_default_path_from = project_get_field( $t_project_id_from, 'file_path' );
++	if( is_blank( $t_default_path_from ) ) {
++		$t_default_path_from = config_get_global( 'absolute_path_default_upload_folder' );
++	}
++
++	db_param_push();
++	$t_query_attachments = 'SELECT id, folder, diskfile FROM {bug_file}
++	                                 WHERE bug_id=' . db_param();
++	$t_attachment_rows = array();
++	$t_result = db_query( $t_query_attachments, array( (int)$p_bug_id ) );
++	while( $t_attachment_row = db_fetch_array( $t_result ) ) {
++		$t_attachment_rows[] = $t_attachment_row;
+ 	}
+ 
+ 	# Initialize the update query to update a single row
+@@ -1404,15 +1559,23 @@ function file_move_bug_attachments( $p_bug_id, $p_project_id_to ) {
+ 	                                 WHERE bug_id=' . db_param() . '
+ 	                                 AND id =' . db_param();
+ 
+-	$t_attachment_rows = bug_get_attachments( $p_bug_id );
+ 	$t_attachments_count = count( $t_attachment_rows );
+ 	for( $i = 0; $i < $t_attachments_count; $i++ ) {
+ 		$t_row = $t_attachment_rows[$i];
+ 		$t_basename = basename( $t_row['diskfile'] );
+ 
++		$t_path_from = $t_row['folder'];
++		if( is_blank( $t_path_from ) ) {
++			$t_path_from = $t_default_path_from;
++		}
++
+ 		$t_disk_file_name_from = file_path_combine( $t_path_from, $t_basename );
+ 		$t_disk_file_name_to = file_path_combine( $t_path_to, $t_basename );
+ 
++		if( $t_disk_file_name_from == $t_disk_file_name_to ) {
++			continue;
++		}
++
+ 		if( !file_exists( $t_disk_file_name_to ) ) {
+ 			chmod( $t_disk_file_name_from, 0775 );
+ 			if( !rename( $t_disk_file_name_from, $t_disk_file_name_to ) ) {
+@@ -1461,7 +1624,7 @@ function file_copy_attachments( $p_source_bug_id, $p_dest_bug_id ) {
+ 		# prepare the new diskfile name and then copy the file
+ 		$t_source_file = $t_bug_file['folder'] . $t_bug_file['diskfile'];
+ 		if( ( config_get( 'file_upload_method' ) == DISK ) ) {
+-			$t_source_file = file_normalize_attachment_path( $t_source_file, $t_project_id );
++			$t_source_file = file_get_disk_path( $t_bug_file, $t_project_id );
+ 			$t_file_path = dirname( $t_source_file ) . DIRECTORY_SEPARATOR;
+ 		} else {
+ 			$t_file_path = $t_bug_file['folder'];
+diff --git a/file_download.php b/file_download.php
+index 8be4b53bd..075581e97 100644
+--- a/file_download.php
++++ b/file_download.php
+@@ -102,6 +102,7 @@ if( false === $t_row ) {
+ /**
+  * @var int    $v_bug_id
+  * @var int    $v_project_id
++ * @var string $v_folder
+  * @var string $v_diskfile
+  * @var string $v_filename
+  * @var int    $v_filesize
+@@ -162,7 +163,7 @@ $t_file_info_type = false;
+ 
+ switch( $t_upload_method ) {
+ 	case DISK:
+-		$t_local_disk_file = file_normalize_attachment_path( $v_diskfile, $t_project_id );
++		$t_local_disk_file = file_get_disk_path( $t_row, $t_project_id );
+ 		if( file_exists( $t_local_disk_file ) ) {
+ 			$t_file_info_type = file_get_mime_type( $t_local_disk_file );
+ 		}
+diff --git a/manage_user_create.php b/manage_user_create.php
+index e90d96ad8..c8d3b637d 100644
+--- a/manage_user_create.php
++++ b/manage_user_create.php
+@@ -67,10 +67,14 @@ if( $f_password != $f_password_verify ) {
+ }
+ 
+ # Password won't be sent by email. It is entered by the admin
+-# Now, if the password is empty, confirm that that is what we wanted
+-if( is_blank( $f_password ) && (
+-	ON != config_get( 'send_reset_password' ) ||
+-	ON != config_get( 'enable_email_notification' ) )
++# Now, if the password is empty, confirm that that is what we wanted.
++# With LDAP authentication the local password is never used, so the form does
++# not offer the field and there is nothing to confirm.
++if( is_blank( $f_password )
++	&& LDAP != config_get_global( 'login_method' )
++	&& (
++		ON != config_get( 'send_reset_password' ) ||
++		ON != config_get( 'enable_email_notification' ) )
+ ) {
+ 	helper_ensure_confirmed(
+ 		lang_get( 'empty_password_sure_msg' ),
+diff --git a/manage_user_create_page.php b/manage_user_create_page.php
+index b7f3f6231..2ae54b237 100644
+--- a/manage_user_create_page.php
++++ b/manage_user_create_page.php
+@@ -102,7 +102,9 @@ print_manage_menu( 'manage_user_create_page.php' );
+ 				</td>
+ 			</tr><?php
+ 			}
+-			if( OFF == config_get( 'send_reset_password' ) )  { ?>
++			if( LDAP != config_get_global( 'login_method' )
++				&& OFF == config_get( 'send_reset_password' )
++			) { ?>
+ 			<tr>
+ 				<td class="category">
+ 					<?php echo lang_get( 'password' ) ?>

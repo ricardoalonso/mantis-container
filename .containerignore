@@ -1,0 +1,6 @@
+# The build only needs ./files, ./patches/<version> and ./checksums.sha256.
+.git
+.gitignore
+*.md
+*.sh
+Containerfile*

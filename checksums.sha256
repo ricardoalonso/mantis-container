@@ -1,0 +1,15 @@
+# SHA256 checksums for the MantisBT release tarballs, verified at build time.
+#
+# Adding a version: download the tarball, check it yourself, then add a line
+# here. `install-mantis.sh` refuses to build a version that is not listed, so a
+# typo in MANTIS_VERSION fails the build instead of silently producing an
+# image without MantisBT in it.
+#
+# Provenance: SourceForge publishes only MD5 through its API, not SHA256, so
+# these were computed from a download rather than taken from an upstream
+# signature. They pin the artifact -- a later change to the tarball, whether
+# corruption or tampering, fails the build -- but they do not independently
+# attest the first download. Verify against https://mantisbt.org/ if that
+# distinction matters to you.
+a5fa72548c91875214dc89a6c4619392bfbfae0459caa0f74b784da936ece8c3  mantisbt-2.27.1.tar.gz
+a400bd2957154baad3412130031e893d5c18cf1ed1cfb38b77ee64afd1ed2a33  mantisbt-2.28.4.tar.gz
