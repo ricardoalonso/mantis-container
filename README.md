@@ -81,10 +81,37 @@ direction.
 | `PHP_MEMORY_LIMIT` | `1024M` |
 | `PHP_DISPLAY_ERRORS` | `Off` |
 | `PHP_MAX_EXECUTION_TIME` | `30` |
+| `PHP_OPCACHE_VALIDATE_TIMESTAMPS` | `On` |
 | `HTTPD_REQUEST_TIMEOUT` | `300` |
+
+Setting `PHP_OPCACHE_VALIDATE_TIMESTAMPS=Off` removes a stat per included file
+per request. The application code in the image never changes, so this is safe
+— but `config_inc.php` lives on a volume, and with it Off an edit there needs a
+container restart to take effect.
 
 Ports 8080 (http) and 8443 (https, self-signed dummy certificate — put a real
 proxy in front). Volumes at `/mantis/config` and `/mantis/attachments`.
+
+## Apache configuration
+
+Three drop-ins under `files/etc/httpd/conf.d/`:
+
+- `mantis.conf` sets `AllowOverride All` on the MantisBT tree. This matters:
+  MantisBT ships thirteen `.htaccess` files that deny access to `core/`,
+  `library/`, `vendor/`, `lang/`, `scripts/` and `plugins/`, and carry the
+  rewrite rules the REST API needs. Apache's default `AllowOverride None`
+  ignored all of them, leaving the source tree browsable. `Options -Indexes`
+  is set as well, so no directory index is ever generated.
+- `zz-mantis-security.conf` — `ServerTokens Prod`, `TraceEnable Off`, drops
+  `X-Powered-By`, and adds `X-Content-Type-Options` / `Referrer-Policy` to the
+  responses MantisBT does not generate itself. HSTS is deliberately left to the
+  TLS terminator in front.
+- `zz-mantis-performance.conf` — gzip for text types (~65-70% on MantisBT's CSS
+  and JS), far-future expiry for static assets (MantisBT already cache-busts
+  them with `?cache_key=`), and KeepAlive.
+
+PHP tuning is in `files/etc/php.d/99-mantis.ini`, mostly opcache sizing for a
+~1100 file codebase. The MPM is already `event`, which is correct with PHP-FPM.
 
 The entrypoint supervises php-fpm and httpd together: if either exits on its
 own the container exits non-zero, so a restart policy recovers it. A `stop`

@@ -11,7 +11,11 @@
 #   3. the container starts and Apache answers
 #   4. PHP-FPM is executing PHP, not just serving static files
 #   5. the healthcheck script passes inside the container
-#   6. the container exits when php-fpm dies, instead of serving 502s forever
+#   6. the source tree is not browsable
+#   7. responses do not leak Apache/PHP versions
+#   8. static assets are compressed and cacheable
+#   9. REST routing still works (the canary for AllowOverride)
+#  10. the container exits when php-fpm dies -- destructive, so it runs last
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -97,7 +101,60 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "6. Container exits when php-fpm dies"
+step "6. Source tree is not browsable"
+for d in core library vendor lang scripts plugins; do
+	code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/mantis/$d/")
+	case "$code" in
+		403|404) ;;
+		*) fail "/mantis/$d/ returned $code; the tree is exposed" ;;
+	esac
+done
+pass "core, library, vendor, lang, scripts and plugins are all denied"
+
+body=$(curl -s "http://127.0.0.1:${PORT}/mantis/js/" || true)
+printf '%s' "$body" | grep -qi "Index of" \
+	&& fail "directory listing is still generated" \
+	|| pass "no directory index generated"
+
+# fonts/ must still work: its .htaccess allows font files rather than denying
+# everything, so a blanket deny would break the UI.
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/mantis/fonts/")
+[ "$code" = "403" ] || [ "$code" = "404" ] || [ "$code" = "200" ] \
+	&& pass "fonts/ still reachable as upstream intends (HTTP $code)" \
+	|| fail "fonts/ returned $code"
+
+# -----------------------------------------------------------------------------
+step "7. Responses do not leak versions"
+hdrs=$(curl -sI "http://127.0.0.1:${PORT}/mantis/login_page.php")
+printf '%s' "$hdrs" | grep -qi "^X-Powered-By" \
+	&& fail "X-Powered-By still present" \
+	|| pass "no X-Powered-By header"
+server=$(printf '%s' "$hdrs" | grep -i "^Server:" | tr -d '\r')
+printf '%s' "$server" | grep -qiE "[0-9]+\.[0-9]+" \
+	&& fail "Server header still carries a version: $server" \
+	|| pass "Server header is bare (${server:-none})"
+
+# -----------------------------------------------------------------------------
+step "8. Static assets are compressed and cacheable"
+enc=$(curl -s -H 'Accept-Encoding: gzip' -o /dev/null -D- \
+	"http://127.0.0.1:${PORT}/mantis/css/default.css" | grep -i "content-encoding" | tr -d '\r')
+[ -n "$enc" ] && pass "css is compressed (${enc})" || fail "css is not compressed"
+
+exp=$(curl -s -o /dev/null -D- "http://127.0.0.1:${PORT}/mantis/css/default.css" \
+	| grep -iE "^(expires|cache-control)" | head -1 | tr -d '\r')
+[ -n "$exp" ] && pass "css carries caching headers (${exp})" || fail "css has no caching headers"
+
+# -----------------------------------------------------------------------------
+step "9. REST API routing still works"
+# This depends on api/rest/.htaccess, so it is the canary for AllowOverride.
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/mantis/api/rest/issues")
+case "$code" in
+	403|404) fail "REST returned $code; the .htaccess rewrite is not being applied" ;;
+	*) pass "REST routing intact (HTTP $code)" ;;
+esac
+
+# -----------------------------------------------------------------------------
+step "10. Container exits when php-fpm dies (destructive, runs last)"
 # The old entrypoint exec'd httpd and backgrounded php-fpm, so a dead php-fpm
 # left the container 'up' and serving 502s indefinitely.
 podman exec "$POD-app" pkill -TERM -x php-fpm \

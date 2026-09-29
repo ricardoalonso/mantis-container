@@ -31,6 +31,15 @@ replace_param "s/^memory_limit.*/memory_limit = $PHP_MEMORY_LIMIT/" /etc/php.ini
 replace_param "s/^max_execution_time.*/max_execution_time = $PHP_MAX_EXECUTION_TIME/" /etc/php.ini
 replace_param "s/.*request_terminate_timeout =.*/request_terminate_timeout = $PHP_MAX_EXECUTION_TIME/" /etc/php-fpm.d/www.conf
 
+# opcache revalidation. With this Off, PHP never stats cached files again --
+# faster, but a config_inc.php edit on the mounted volume then needs a restart
+# to take effect.
+case "${PHP_OPCACHE_VALIDATE_TIMESTAMPS:-On}" in
+	[Oo]ff|0|false|no) validate=0 ;;
+	*)                 validate=1 ;;
+esac
+replace_param "s/^opcache.validate_timestamps.*/opcache.validate_timestamps = $validate/" /etc/php.d/99-mantis.ini
+
 # Timeout. Truncating rather than appending: with `>>` this file gained a
 # duplicate Timeout directive on every container restart.
 echo "Timeout $HTTPD_REQUEST_TIMEOUT" > /etc/httpd/conf.d/timeout.conf
