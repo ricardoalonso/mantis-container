@@ -7,7 +7,7 @@
 #
 # Checks, in order:
 #   1. MantisBT is present in the image at all
-#   2. the patches were applied
+#   2. the patches were applied, and PHP has the php2shell fix
 #   3. the container starts and Apache answers
 #   4. PHP-FPM is executing PHP, not just serving static files
 #   5. the healthcheck script passes inside the container
@@ -55,6 +55,13 @@ if podman run --rm "$IMAGE" grep -q 'file_get_disk_path' \
 	pass "file_download.php carries the attachment path fix"
 else
 	fail "file_download.php is unpatched"
+fi
+
+if podman run --rm "$IMAGE" rpm -q --qf '%{VERSION}\n' php-common \
+		| awk -F. '{ exit !(($1 == 8 && $2 == 2 && $3 >= 35) || ($1 == 8 && $2 == 3 && $3 >= 36) || ($1 == 8 && $2 == 4 && $3 >= 27) || ($1 == 8 && $2 == 5 && $3 >= 12) || $1 >= 9) }'; then
+	pass "PHP includes the php2shell fix (CVE-2026-109618/109619)"
+else
+	fail "PHP is vulnerable to php2shell (CVE-2026-109618/109619) -- rebuild"
 fi
 
 # -----------------------------------------------------------------------------

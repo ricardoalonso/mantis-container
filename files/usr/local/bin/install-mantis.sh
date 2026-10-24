@@ -72,6 +72,11 @@ sed -i 's/.*pm.status_path =.*/pm.status_path = \/php-status/' /etc/php-fpm.d/ww
 # set equals to default apache max_clients/max_connections
 sed -i 's/.*pm.max_children =.*/pm.max_children = 150/' /etc/php-fpm.d/www.conf
 sed -i 's/.*pm.max_requests =.*/pm.max_requests = 100/' /etc/php-fpm.d/www.conf
+# Defence in depth for php2shell (CVE-2026-109619), per Red Hat RHSB-2026-013.
+# MantisBT does not use upload progress. php_admin_flag so that .user.ini and
+# ini_set() cannot turn it back on. Patching PHP is the actual fix -- see the
+# version gate in the Containerfile.
+echo 'php_admin_flag[session.upload_progress.enabled] = off' >> /etc/php-fpm.d/www.conf
 
 # -----------------------------------------------------------------------------
 # Apply patches to the Mantis code. A patch that does not apply is a build
