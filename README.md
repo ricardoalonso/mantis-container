@@ -9,6 +9,7 @@ at build time.
 ./build.sh              # the version in the Containerfile
 ./build.sh 2.27.1       # a specific version
 ./smoke-test.sh         # start it and check it actually works
+./oidc-test.sh          # OpenID Connect login end to end, against a real IdP
 ./push.sh               # publish; add --latest to move the latest tag
 ```
 
@@ -73,28 +74,50 @@ direction.
 
 ## Runtime
 
-| Variable | Default |
-|---|---|
-| `MANTIS_CONFIG_FOLDER` | `/mantis/config/` |
-| `MANTIS_ADMINISTRATION_ENABLED` | `true` |
-| `PHP_UPLOAD_MAX_FILESIZE` | `4M` |
-| `PHP_MEMORY_LIMIT` | `1024M` |
-| `PHP_DISPLAY_ERRORS` | `Off` |
-| `PHP_MAX_EXECUTION_TIME` | `30` |
-| `PHP_OPCACHE_VALIDATE_TIMESTAMPS` | `On` |
-| `HTTPD_REQUEST_TIMEOUT` | `300` |
+Everything about running the image -- every variable and its default, the
+drop-in directories, hooks, TLS, proxies and secrets -- is in
+[README-usage.md](README-usage.md). That file is copied into the image at
+`/usr/share/doc/mantis-container/README-usage.md`; paste it into the quay.io
+repository description when publishing a release.
 
-Setting `PHP_OPCACHE_VALIDATE_TIMESTAMPS=Off` removes a stat per included file
-per request. The application code in the image never changes, so this is safe
-— but `config_inc.php` lives on a volume, and with it Off an edit there needs a
-container restart to take effect.
+How it fits together:
 
-Ports 8080 (http) and 8443 (https, self-signed dummy certificate — put a real
-proxy in front). Volumes at `/mantis/config` and `/mantis/attachments`.
+- `files/usr/local/lib/mantis/common.sh` holds the defaults and the validation
+  helpers. It is the only place defaults live: the `Containerfile` does not
+  repeat them as `ENV`. Change a default there **and** in README-usage.md.
+- `apply-parameters.sh` validates every value, then rewrites
+  `/etc/php.d/zz-runtime.ini`, `/etc/php-fpm.d/zz-runtime.conf` and
+  `/etc/httpd/conf.d/zz-runtime.conf` from scratch on each start, and copies the
+  `/mantis/conf.d` drop-ins after them. Distribution files are no longer edited
+  with `sed` at runtime.
+- `mantis-config.sh` writes `config_inc.php` from `MANTIS_*` variables when the
+  volume has none.
+- OpenID Connect (`MANTIS_OIDC_*`) is configured by `apply-parameters.sh` on
+  every start, in two halves: `/etc/httpd/conf.d/zz-oidc.conf` for
+  mod_auth_openidc, and `/etc/mantis/runtime_inc.php`, which `config_inc.php`
+  loads last, for the `OidcAuth` plugin. The plugin's source is in
+  `files/usr/local/lib/mantis/plugins/OidcAuth/`. The design and its reasons are in
+  [README-authentication.md](README-authentication.md). It is shipped in the
+  image too.
+- `install-plugins.sh` fills the `/mantis/plugins` volume on every start.
+  MantisBT's `plugins/` is a symlink to it. At build time `install-mantis.sh`
+  sets the image's own plugins aside in `/usr/local/lib/mantis/bundled-plugins/`
+  (MantisBT's plus `OidcAuth`), and the script copies them in, then installs
+  the `MANTIS_PLUGINS` downloads. Folders it did not put there are left alone.
+- `run.sh` calls them, toggles the admin pages, runs `/mantis/entrypoint.d`
+  hooks, checks the configuration (`php`, `php-fpm -t`, `httpd -t`) and then
+  supervises the two processes.
+
+Adding a variable: give it a default in `common.sh`, validate and write it in
+`apply-parameters.sh` (or `mantis-config.sh`), document it in README-usage.md,
+and add a check to `smoke-test.sh`.
 
 ## Apache configuration
 
-Three drop-ins under `files/etc/httpd/conf.d/`:
+Three static drop-ins under `files/etc/httpd/conf.d/`, plus `zz-runtime.conf`
+generated at startup (ServerName, timeouts, the URL MantisBT is served at
+from `MANTIS_CONTEXT_PATH`, mod_remoteip, the status pages,
+and the include of `files/etc/httpd/mantis-ssl.conf` when HTTPS is on):
 
 - `mantis.conf` sets `AllowOverride All` on the MantisBT tree. This matters:
   MantisBT ships thirteen `.htaccess` files that deny access to `core/`,
@@ -110,10 +133,13 @@ Three drop-ins under `files/etc/httpd/conf.d/`:
   and JS), far-future expiry for static assets (MantisBT already cache-busts
   them with `?cache_key=`), and KeepAlive.
 
-PHP tuning is in `files/etc/php.d/99-mantis.ini`, mostly opcache sizing for a
-~1100 file codebase. The MPM is already `event`, which is correct with PHP-FPM.
+Static PHP tuning is in `files/etc/php.d/99-mantis.ini`, mostly opcache sizing
+for a ~1100 file codebase. The MPM is already `event`, which is correct with PHP-FPM.
 
 The entrypoint supervises php-fpm and httpd together: if either exits on its
 own the container exits non-zero, so a restart policy recovers it. A `stop`
-exits 0. `HEALTHCHECK` requests a PHP page, so it fails if php-fpm is dead even
-while Apache still answers.
+exits 0. `HEALTHCHECK` requests `/healthz.php`, a PHP page that does not touch
+the database: it fails if php-fpm is dead even while Apache still answers, but
+not when only the database is down. Readiness belongs on
+`/login_page.php` (under `MANTIS_CONTEXT_PATH`); README-usage.md has probe examples for Kubernetes and
+OpenShift.

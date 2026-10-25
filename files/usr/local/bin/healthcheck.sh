@@ -1,10 +1,12 @@
 #!/bin/bash
 # Liveness check for the HEALTHCHECK instruction.
 #
-# Checks that Apache is answering *and* that php-fpm is behind it: the URL is a
-# PHP entry point, so a dead php-fpm gives a 502 and fails here. The previous
-# version grepped "< HTTP/1.1 200" out of curl's verbose output, which broke on
-# any change to that format or a switch to HTTP/2.
+# Requests /healthz.php, so it checks that Apache is answering *and* that
+# php-fpm is behind it: a dead php-fpm gives a 502 and fails here. It does not
+# touch the database on purpose -- a database outage must not get the container
+# restarted. Readiness ("can MantisBT serve users") is <MANTIS_CONTEXT_PATH>/login_page.php;
+# see README-usage.md.
 set -euo pipefail
 
-curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/mantis/login_page.php
+body=$(curl -fsS --max-time 5 http://127.0.0.1:8080/healthz.php)
+[ "$body" = "ok" ]

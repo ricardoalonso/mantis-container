@@ -15,26 +15,26 @@ LABEL maintainer="Ricardo Alonso <ricardoalonsos@gmail.com>" \
       description="MantisBT ${MANTIS_VERSION} running on Apache 2.4 and PHP ${PHP_VERSION} + PHP-FPM" \
       org.opencontainers.image.title="mantisbt" \
       org.opencontainers.image.version="${MANTIS_VERSION}" \
-      org.opencontainers.image.source="https://github.com/ricardoalonso/mantis-container"
+      org.opencontainers.image.source="https://github.com/ricardoalonso/mantis-container" \
+      org.opencontainers.image.documentation="https://github.com/ricardoalonso/mantis-container/blob/main/README-usage.md"
 
 EXPOSE 8080/tcp 8443/tcp
 
+# Runtime defaults (PHP_*, PHP_FPM_*, HTTPD_*, MANTIS_*) live in one place,
+# files/usr/local/lib/mantis/common.sh, and are documented in README-usage.md.
+# They are not repeated here, so the two cannot drift apart.
+#
+# MANTIS_CONFIG_FOLDER is the exception: MantisBT's CLI scripts, run with
+# `podman exec`, read it from the process environment, not from Apache.
 ENV MANTIS_VERSION=${MANTIS_VERSION} \
     PHP_VERSION=${PHP_VERSION} \
-    MANTIS_CONFIG_FOLDER=/mantis/config/ \
-    MANTIS_ADMINISTRATION_ENABLED=true \
-    PHP_UPLOAD_MAX_FILESIZE=4M \
-    PHP_MEMORY_LIMIT=1024M \
-    PHP_DISPLAY_ERRORS=Off \
-    PHP_MAX_EXECUTION_TIME=30 \
-    PHP_OPCACHE_VALIDATE_TIMESTAMPS=On \
-    HTTPD_REQUEST_TIMEOUT=300
+    MANTIS_CONFIG_FOLDER=/mantis/config/
 
 RUN dnf module enable -y php:$PHP_VERSION && \
     INSTALL_PKGS="php php-mysqlnd php-pgsql php-bcmath openssl \
                   php-gd php-intl php-ldap php-mbstring php-pdo \
                   php-process php-soap php-opcache php-xml php-fpm \
-                  php-gmp php-pecl-apcu php-pecl-zip mod_ssl hostname \
+                  php-gmp php-pecl-apcu php-pecl-zip mod_ssl mod_auth_openidc hostname unzip \
                   patch procps-ng " && \
     dnf install -y --setopt=tsflags=nodocs $INSTALL_PKGS && \
     rpm -V $INSTALL_PKGS && \
@@ -62,6 +62,9 @@ COPY ./files /
 # Only this version's patches, so the layer does not carry every other release's.
 COPY ./patches/${MANTIS_VERSION}/ /build/patches/
 COPY ./checksums.sha256 /build/checksums.sha256
+# The usage guides travel with the image, so `podman run --rm <image> cat
+# /usr/share/doc/mantis-container/README-usage.md` works offline.
+COPY ./README-usage.md ./README-authentication.md /usr/share/doc/mantis-container/
 
 RUN install-mantis.sh && rm -rf /build
 
@@ -69,4 +72,4 @@ USER apache
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD ["healthcheck.sh"]
 CMD ["run.sh"]
-VOLUME ["/mantis/config","/mantis/attachments"]
+VOLUME ["/mantis/config","/mantis/attachments","/mantis/plugins"]

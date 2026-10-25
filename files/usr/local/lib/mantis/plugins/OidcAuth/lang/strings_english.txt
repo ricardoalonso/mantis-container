@@ -1,0 +1,20 @@
+<?php
+# OidcAuth plugin strings (English). MantisBT falls back to these for every
+# language that has no translation.
+
+$s_plugin_OidcAuth_title = 'OpenID Connect login';
+$s_plugin_OidcAuth_description = 'Logs users in with the identity provider authenticated by Apache mod_auth_openidc. Managed by the container (MANTIS_OIDC_*).';
+$s_plugin_OidcAuth_password_managed_elsewhere = 'Your password is managed by your organisation\'s single sign-on, not by MantisBT.';
+
+$s_plugin_OidcAuth_error_title = 'Single sign-on failed';
+$s_plugin_OidcAuth_error_not_protected = 'This page must be reached through single sign-on, but the web server did not authenticate the request. Ask the administrator to check the OpenID Connect configuration.';
+$s_plugin_OidcAuth_error_invalid_username = 'The identity provider returned the username "%s", which is not a valid MantisBT username.';
+$s_plugin_OidcAuth_error_local_account = 'The account "%s" is reserved for local login and cannot be used through single sign-on.';
+$s_plugin_OidcAuth_error_anonymous = 'The account "%s" is MantisBT\'s anonymous account and cannot be used through single sign-on.';
+$s_plugin_OidcAuth_error_email_in_use = 'Your email address %s is already used by another MantisBT account. Ask the administrator to rename that account to "%s", or to change its email address.';
+$s_plugin_OidcAuth_error_create_failed = 'Your MantisBT account could not be created: %s';
+$s_plugin_OidcAuth_error_disabled = 'Your MantisBT account "%s" is disabled.';
+
+$s_plugin_OidcAuth_try_again = 'Try again';
+$s_plugin_OidcAuth_sso_logout = 'Log out of single sign-on';
+$s_plugin_OidcAuth_local_login = 'Local login';

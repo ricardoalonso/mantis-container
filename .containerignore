@@ -1,6 +1,9 @@
-# The build only needs ./files, ./patches/<version> and ./checksums.sha256.
+# The build only needs ./files, ./patches/<version>, ./checksums.sha256,
+# README-usage.md and README-authentication.md.
 .git
 .gitignore
 *.md
+!README-usage.md
+!README-authentication.md
 *.sh
 Containerfile*
