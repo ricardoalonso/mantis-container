@@ -360,6 +360,9 @@ for _ in $(seq 1 30); do
 done
 ctx_code() { podman exec "$POD-ctx" curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://127.0.0.1:8080$1"; }
 [ "$(ctx_code /)" = "302 http://127.0.0.1:8080/bugs/" ] || fail "/ returned '$(ctx_code /)'; expected a redirect to /bugs/"
+# Behind a TLS-terminating proxy the redirect must stay on https.
+code=$(podman exec "$POD-ctx" curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Forwarded-Proto: https' -H 'Host: x' http://127.0.0.1:8080/)
+[ "$code" = "302 https://x/bugs/" ] || fail "/ with X-Forwarded-Proto: https returned '$code'; expected https://x/bugs/"
 code=$(ctx_code /bugs/css/default.css); [ "${code%% *}" = "200" ] || fail "/bugs/css/default.css returned $code"
 code=$(ctx_code /bugs/core/); case "${code%% *}" in 403|404) ;; *) fail "/bugs/core/ returned $code" ;; esac
 code=$(ctx_code /css/default.css); [ "${code%% *}" = "404" ] || fail "/css/default.css returned $code outside the context"

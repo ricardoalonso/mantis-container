@@ -310,14 +310,20 @@ status_require() {
 		echo "DocumentRoot /var/www/empty"
 		echo "Alias $context /var/www/html/mantis"
 		# 302, not 301: browsers cache a 301 for good, and the context can change.
-		echo "RedirectMatch 302 ^/\$ $context/"
+		# Apache makes a relative target absolute with its own scheme, which is
+		# http behind a TLS-terminating proxy, so follow X-Forwarded-Proto.
+		# A client faking it only redirects itself.
+		echo "RewriteEngine On"
+		echo "RewriteCond %{HTTP:X-Forwarded-Proto} =https"
+		echo "RewriteRule ^/\$ https://%{HTTP_HOST}$context/ [R=302,L]"
+		echo "RewriteRule ^/\$ $context/ [R=302,L]"
 	fi
 
 	if [ -n "$HTTPD_TRUSTED_PROXIES" ]; then
 		echo
 		echo "# Take the client address from the proxy's header. The access log"
 		echo "# uses %a, so it shows the real client rather than the proxy."
-		echo "# MantisBT honours X-Forwarded-Proto by itself."
+		echo "# MantisBT honours X-Forwarded-Proto by itself, and so does the / redirect."
 		echo "RemoteIPHeader $HTTPD_REMOTEIP_HEADER"
 		echo "RemoteIPInternalProxy ${HTTPD_TRUSTED_PROXIES//,/ }"
 	fi
