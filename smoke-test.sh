@@ -8,7 +8,7 @@
 # Checks, in order:
 #   1. MantisBT is present in the image at all
 #   2. the patches were applied, and PHP has the php2shell fix
-#   3. the container starts and Apache answers
+#   3. the container starts and Apache answers, also with a large Cookie header
 #   4. PHP-FPM is executing PHP, not just serving static files
 #   5. the healthcheck script passes inside the container
 #   6. the source tree is not browsable
@@ -150,6 +150,13 @@ done
 curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null \
 	&& pass "Apache is serving on ${PORT}" \
 	|| { podman logs "$POD-app" | tail -20; fail "Apache never answered"; }
+
+# OIDC keeps its session in cookies; with MantisBT's own the Cookie header can
+# pass Apache's default 8190-byte limit, and then every request fails with 400.
+big_cookie="Cookie: $(for i in $(seq 1 12); do printf 'c%02d=%01000d; ' "$i" 0; done)last=1"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "$big_cookie" "http://127.0.0.1:${PORT}/css/default.css")
+[ "$code" = "200" ] || fail "a ${#big_cookie}-byte Cookie header returned $code, expected 200"
+pass "a ${#big_cookie}-byte Cookie header is accepted (LimitRequestFieldSize)"
 
 # -----------------------------------------------------------------------------
 step "4. PHP-FPM is executing PHP, and MantisBT installs"
@@ -386,14 +393,16 @@ oidc_env=(-e MANTIS_OIDC_ISSUER=https://sso.example.com/realms/smoke -e MANTIS_O
           -e MANTIS_OIDC_CLIENT_SECRET=s3cr3t -e "MANTIS_OIDC_LOCAL_USERS=administrator, break.glass")
 out=$(podman run --rm "${oidc_env[@]}" "$IMAGE" bash -c 'apply-parameters.sh >/dev/null && httpd -t 2>&1 &&
 	httpd -M 2>/dev/null | grep -c auth_openidc && stat -c %a /etc/httpd/conf.d/zz-oidc.conf &&
+	grep -c -e "^OIDCPassClaimsAs environment none\$" -e "^OIDCStateMaxNumberOfCookies 5 true\$" /etc/httpd/conf.d/zz-oidc.conf &&
 	grep -c "s3cr3t" /etc/httpd/conf.d/zz-runtime.conf; php -r "define(\"PLUGIN_PRIORITY_HIGH\", 5); require \"/etc/mantis/runtime_inc.php\"; echo json_encode([\$g_plugins_force_installed, \$g_plugin_OidcAuth_local_users]);"') \
 	|| fail "OIDC configuration rejected: $out"
 [ "$out" = 'Syntax OK
 1
 600
+2
 0
 [{"OidcAuth":5},["administrator","break.glass"]]' ] || fail "unexpected OIDC configuration: $out"
-pass "on: Apache accepts it, module loaded, secret only in a 0600 file, plugin forced on, local users quoted"
+pass "on: Apache accepts it, module loaded, claims passed as UTF-8, state cookies capped, secret only in a 0600 file, plugin forced on, local users quoted"
 # An existing config_inc.php that does not load runtime_inc.php would make
 # MantisBT ignore the plugin silently; the container refuses to start instead.
 mkdir -p "$WORK/oldconfig"

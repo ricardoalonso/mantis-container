@@ -227,8 +227,9 @@ The startup log shows the result:
 
 - **Behind a reverse proxy** (TLS terminated in front of the container), set
   `HTTPD_TRUSTED_PROXIES` as described in README-usage.md. mod_auth_openidc
-  then builds the redirect URI from `X-Forwarded-Proto` and `X-Forwarded-Host`.
-  Make sure the proxy sends both, or preserves the `Host` header.
+  then builds the redirect URI from `X-Forwarded-Proto`, `X-Forwarded-Host`
+  and `X-Forwarded-Port`. Make sure the proxy sends the first two, or
+  preserves the `Host` header, and sends the port only if it is the public one.
 - **More than one replica.** Set the same `MANTIS_OIDC_CRYPTO_PASSPHRASE` (32
   characters or more) on all of them. The login state and session live in
   cookies encrypted with it, so a login can then finish on any replica. Without
@@ -248,7 +249,10 @@ The startup log shows the result:
   SOAP, static files and the health probes are untouched.
 - **The identity is never taken from a header.** Apache passes it to PHP as
   server variables: `AUTH_TYPE`, `REMOTE_USER` and `OIDC_CLAIM_*`, with
-  `OIDCPassClaimsAs environment`. A client cannot set those. The plugin
+  `OIDCPassClaimsAs environment none`. A client cannot set those. `none` is
+  the encoding: values arrive in UTF-8 as the IdP sent them, not converted to
+  Latin-1 (the module's default, which MariaDB rejects for names with
+  accents). The plugin
   refuses the request unless `AUTH_TYPE` is `openid-connect`. Requests that try
   to dodge Apache's URL match (for example `page=%4FidcAuth/login`) or that
   forge a `Remote-User` header get a 403. `oidc-test.sh` checks both.
@@ -276,9 +280,14 @@ The startup log shows the result:
 - **No group or role mapping.** Access levels and project membership stay in
   MantisBT. New accounts get `$g_default_new_account_access_level`.
 - **Cookie size.** The session cookie carries the ID, access and refresh
-  tokens: about 6 KB with Keycloak's defaults, split into two cookies. Very
-  large tokens (users in hundreds of groups, with group claims) could reach
-  Apache's 8 KB limit on the `Cookie` header. Trim the token at the IdP, or
+  tokens: about 6 KB with Keycloak's defaults, split into two cookies. With
+  MantisBT's own cookies this can pass Apache's default 8 KB limit on the
+  `Cookie` header, and the browser then gets 400 on every request. The image
+  raises the limit to 16 KB (`LimitRequestFieldSize`, in
+  `zz-mantis-performance.conf`) and keeps at most 5 leftover login-state
+  cookies (`OIDCStateMaxNumberOfCookies 5 true`). Proxies in front must accept
+  the same size (the OpenShift router does). Very large tokens (users in
+  hundreds of groups, with group claims) can still reach it. Trim the token at the IdP, or
   switch to a server-side session with a drop-in containing
   `OIDCSessionType server-cache`. That works only with a single replica, or
   with sticky sessions.
@@ -363,7 +372,8 @@ Two scripts, both run against the built image:
 - **`./oidc-test.sh`** runs the real browser flow with curl against an IdP:
   redirects, the IdP's login form and cookies. It checks:
   - the redirect to the IdP (code flow, PKCE S256, redirect URI)
-  - account creation from the claims, and the default access level
+  - account creation from the claims, an accented name stored as UTF-8, and
+    the default access level
   - that SSO accounts have no password
   - refusal of break-glass names through SSO
   - local login for `administrator`
@@ -381,7 +391,7 @@ Two scripts, both run against the built image:
   The IdP needs the `mantis` client, with redirect URI
   `http://localhost:18090/oidc/callback` and post-logout URI
   `http://localhost:18090/login_page.php`, plus two users: `mantis-alice`
-  (email `alice@example.test`, name *Alice Tester*) and `mantis-breakglass`.
+  (email `alice@example.test`, name *Alice Gonçalves*) and `mantis-breakglass`.
   All names can be overridden; see the top of the script. For an IdP on this
   machine's `localhost`, the script forwards the container's `localhost:<port>`
   to it, so the browser and the container see the same issuer URL.
@@ -402,7 +412,8 @@ This is the configuration `oidc-test.sh` was run against:
   - default client scopes left as Keycloak creates them (`web-origins`, `acr`,
     `roles`, `profile`, `basic`, `email`)
 - **User `mantis-alice`:** email `alice@example.test` (verified), first name
-  *Alice*, last name *Tester*, password set, no required actions.
+  *Alice*, last name *Gonçalves* (the accent is the point: it tests the claim
+  encoding), password set, no required actions.
 - **User `mantis-breakglass`:** email `breakglass@example.test` (verified),
   *Break Glass*, password set. Listed in `MANTIS_OIDC_LOCAL_USERS` by the test,
   to prove such names are refused.
@@ -428,6 +439,18 @@ parameter in the browser's address bar on the IdP page. Behind a proxy, set
 **Apache logs "no state cookie found" or "state has expired".** The login took
 more than 5 minutes, the browser blocks cookies, or, with several replicas,
 `MANTIS_OIDC_CRYPTO_PASSPHRASE` differs between them.
+
+**HTTP 500 "APPLICATION ERROR #401 ... Incorrect string value: '\xE7..."
+for column `realname`** after SSO, only for users with accents in their name.
+The claims reached PHP Latin-1 encoded: the generated `zz-oidc.conf` (or a
+drop-in overriding it) lacks `none` in `OIDCPassClaimsAs environment none`.
+Current images convert such values and log "claim 'name' is not UTF-8".
+
+**Every request returns 400 Bad Request, even static files, for one browser.**
+The `Cookie` header is over `LimitRequestFieldSize` (16 KB in this image).
+Clearing the site's cookies fixes it for that browser. `LogLevel info` shows
+`AH00561 ... exceeds server limit`. Check what is filling it: the session
+cookie (large tokens) or cookies set by other applications on the same domain.
 
 **Login fails with an issuer mismatch in the Apache log.** The container and the browser see the
 IdP under different URLs. The issuer in `MANTIS_OIDC_ISSUER` must be the

@@ -376,8 +376,10 @@ if [ -n "$MANTIS_OIDC_ISSUER" ]; then
 		echo "OIDCCryptoPassphrase \"$MANTIS_OIDC_CRYPTO_PASSPHRASE\""
 		echo "OIDCRemoteUserClaim $MANTIS_OIDC_USERNAME_CLAIM"
 		# As server variables only: a request header of the same name can be
-		# forged on any URL this module does not protect.
-		echo "OIDCPassClaimsAs environment"
+		# forged on any URL this module does not protect. "none": pass the
+		# values as the IdP sent them (UTF-8). The default, latin1, re-encodes
+		# them, and MariaDB then rejects a name like "Gonçalves" (error 1366).
+		echo "OIDCPassClaimsAs environment none"
 		# The session lives in encrypted cookies, not in this container, so a
 		# login may finish on another replica. store_id_token: client-cookie
 		# leaves the id_token out by default, and without it logout cannot
@@ -388,10 +390,16 @@ if [ -n "$MANTIS_OIDC_ISSUER" ]; then
 		# a working day.
 		echo "OIDCSessionInactivityTimeout 28800"
 		echo "OIDCSessionMaxDuration 28800"
+		# Every unfinished login (an abandoned tab, a back button) leaves a
+		# state cookie behind until it expires. Next to the session cookies
+		# they can push the Cookie header past Apache's limit, and then every
+		# request fails with 400. Keep at most 5; "true" drops the oldest
+		# rather than refusing a new login.
+		echo "OIDCStateMaxNumberOfCookies 5 true"
 		if [ -n "$HTTPD_TRUSTED_PROXIES" ]; then
 			# Behind a TLS-terminating proxy the redirect URI must be built
-			# from the public scheme and host, not from this container's.
-			echo "OIDCXForwardedHeaders X-Forwarded-Proto X-Forwarded-Host"
+			# from the public scheme, host and port, not from this container's.
+			echo "OIDCXForwardedHeaders X-Forwarded-Proto X-Forwarded-Host X-Forwarded-Port"
 		fi
 		echo
 		echo "<Location \"$context/oidc/callback\">"

@@ -52,6 +52,30 @@ function oidc_login_fail( $p_message, $p_log ) {
 	exit;
 }
 
+/**
+ * A claim from mod_auth_openidc, as valid UTF-8.
+ *
+ * Apache is configured with "OIDCPassClaimsAs environment none", so values
+ * arrive as the IdP sent them, in UTF-8. Should they ever arrive Latin-1
+ * encoded (the module's default), they are converted here: written as they
+ * are, MariaDB rejects them, and MantisBT's database errors halt the page
+ * (APPLICATION ERROR #401) rather than throw, so a try/catch cannot help.
+ *
+ * @param string       $p_name       Claim name, as in OIDC_CLAIM_<name>.
+ * @param integer|null $p_max_length Characters the database column holds,
+ *                                   for values that may be shortened.
+ * @return string Trimmed, possibly empty.
+ */
+function oidc_claim( $p_name, $p_max_length = null ) {
+	$t_value = trim( $_SERVER['OIDC_CLAIM_' . $p_name] ?? '' );
+	if( !mb_check_encoding( $t_value, 'UTF-8' ) ) {
+		error_log( "OidcAuth: claim '$p_name' is not UTF-8; converted from Latin-1."
+			. ' Is OIDCPassClaimsAs missing its "none" encoding?' );
+		$t_value = mb_convert_encoding( $t_value, 'UTF-8', 'ISO-8859-1' );
+	}
+	return $p_max_length === null ? $t_value : mb_substr( $t_value, 0, $p_max_length, 'UTF-8' );
+}
+
 # --- Identity from Apache -----------------------------------------------------
 if( ( $_SERVER['AUTH_TYPE'] ?? '' ) !== 'openid-connect' || is_blank( $_SERVER['REMOTE_USER'] ?? '' ) ) {
 	oidc_login_fail( plugin_lang_get( 'error_not_protected' ),
@@ -59,8 +83,9 @@ if( ( $_SERVER['AUTH_TYPE'] ?? '' ) !== 'openid-connect' || is_blank( $_SERVER['
 }
 
 $t_username = trim( $_SERVER['REMOTE_USER'] );
-$t_email = trim( $_SERVER['OIDC_CLAIM_email'] ?? '' );
-$t_realname = trim( $_SERVER['OIDC_CLAIM_name'] ?? '' );
+# Never shortened: a cut email is someone else's address. MantisBT validates it.
+$t_email = oidc_claim( 'email' );
+$t_realname = oidc_claim( 'name', DB_FIELD_SIZE_REALNAME );
 
 if( !user_is_name_valid( $t_username ) ) {
 	oidc_login_fail( sprintf( plugin_lang_get( 'error_invalid_username' ), $t_username ),
@@ -115,7 +140,11 @@ if( $t_user_id === false ) {
 		}
 	}
 	if( !is_blank( $t_realname ) && $t_realname !== user_get_realname( $t_user_id ) ) {
-		user_set_realname( $t_user_id, $t_realname );
+		try {
+			user_set_realname( $t_user_id, $t_realname );
+		} catch( Exception $e ) {
+			error_log( "OidcAuth: kept the real name of '$t_username': " . $e->getMessage() );
+		}
 	}
 }
 

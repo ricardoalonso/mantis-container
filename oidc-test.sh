@@ -10,7 +10,8 @@
 #   - a confidential client OIDC_CLIENT_ID with redirect URI
 #     http://localhost:$PORT/oidc/callback and post-logout redirect URI
 #     http://localhost:$PORT/login_page.php
-#   - user OIDC_TEST_USER, with an email address and a name
+#   - user OIDC_TEST_USER, with an email address and a name. Keep accents in
+#     the name: claims passed Latin-1 encoded once broke every such login
 #   - user OIDC_LOCAL_TEST_USER, used to prove that a name listed in
 #     MANTIS_OIDC_LOCAL_USERS is refused through single sign-on
 #
@@ -19,14 +20,15 @@
 # Checks, in order:
 #   1. an anonymous visit is sent to the IdP, with PKCE and the right client
 #   2. logging in at the IdP creates the MantisBT account and logs it in
-#   3. the account has the IdP's email and name, and the default access level
+#   3. the account has the IdP's email and name (stored as UTF-8), and the
+#      default access level
 #   4. SSO accounts cannot use or change a local password
 #   5. a name in MANTIS_OIDC_LOCAL_USERS is refused through SSO
 #   6. the break-glass administrator still logs in with the local form
 #   7. the login page cannot be reached without Apache's authentication
 #   8. REST and the liveness probe are not affected
 #   9. logout ends the IdP session too
-#  10. a second login reuses the account
+#  10. a second login reuses the account and keeps the name intact
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -42,7 +44,7 @@ OIDC_ISSUER=${OIDC_ISSUER:-http://localhost:8081/realms/mantis}
 OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-mantis}
 OIDC_TEST_USER=${OIDC_TEST_USER:-mantis-alice}
 OIDC_TEST_EMAIL=${OIDC_TEST_EMAIL:-alice@example.test}
-OIDC_TEST_NAME=${OIDC_TEST_NAME:-Alice Tester}
+OIDC_TEST_NAME=${OIDC_TEST_NAME:-Alice Gonçalves}
 OIDC_LOCAL_TEST_USER=${OIDC_LOCAL_TEST_USER:-mantis-breakglass}
 : "${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}"
 : "${OIDC_TEST_PASSWORD:?set OIDC_TEST_PASSWORD}"
@@ -102,6 +104,13 @@ print(html.unescape(m.group(1)) if m else "")' "$WORK/body")
 token() { python3 -c 'import re,sys; m=re.search(r"name=\"login_token\" value=\"([^\"]+)\"", open(sys.argv[1]).read()); print(m.group(1) if m else "")' "$WORK/body"; }
 
 db() { podman exec "$POD-db" mariadb -uroot -proot -N -B bugtracker -e "$1"; }
+
+# realname_ok: the stored real name is OIDC_TEST_NAME, byte for byte in UTF-8.
+# Compared in hex, so the mariadb client's character set cannot hide a mismatch.
+realname_ok() {
+	[ "$(db "SELECT HEX(realname) FROM mantis_user_table WHERE username='$OIDC_TEST_USER'")" \
+		= "$(printf '%s' "$OIDC_TEST_NAME" | od -An -tx1 | tr -d ' \n' | tr a-f A-F)" ]
+}
 
 # -----------------------------------------------------------------------------
 step "0. MantisBT with OpenID Connect against $OIDC_ISSUER"
@@ -167,11 +176,12 @@ pass "logged in as $OIDC_TEST_USER (landed on ${result#* })"
 
 # -----------------------------------------------------------------------------
 step "3. The account comes from the IdP's claims"
-row=$(db "SELECT email, realname, access_level, enabled FROM mantis_user_table WHERE username='$OIDC_TEST_USER'")
+row=$(db "SELECT email, access_level, enabled FROM mantis_user_table WHERE username='$OIDC_TEST_USER'")
 [ -n "$row" ] || fail "no MantisBT account $OIDC_TEST_USER"
-IFS=$'\t' read -r email realname access enabled <<<"$row"
+IFS=$'\t' read -r email access enabled <<<"$row"
 [ "$email" = "$OIDC_TEST_EMAIL" ] || fail "email is '$email', expected $OIDC_TEST_EMAIL"
-[ "$realname" = "$OIDC_TEST_NAME" ] || fail "real name is '$realname', expected $OIDC_TEST_NAME"
+realname_ok || fail "real name is not '$OIDC_TEST_NAME' in UTF-8 (HEX: $(db "SELECT HEX(realname) FROM mantis_user_table WHERE username='$OIDC_TEST_USER'"))"
+realname=$OIDC_TEST_NAME
 [ "$access" = "25" ] || fail "access level is $access, expected 25 (REPORTER, the MantisBT default)"
 [ "$enabled" = "1" ] || fail "account is not enabled"
 pass "account created: email $email, real name '$realname', access level REPORTER"
@@ -268,6 +278,9 @@ grep -qi 'logout_page.php' "$WORK/body" || fail "second login failed (ended at $
 	|| fail "second login created another account"
 [ "$(db "SELECT login_count FROM mantis_user_table WHERE username='$OIDC_TEST_USER'")" -ge 2 ] \
 	|| fail "login count did not increase"
-pass "same account, login count increased"
+realname_ok || fail "the second login changed the real name"
+grep -q "OidcAuth: claim .* is not UTF-8" <<<"$(podman logs "$POD-app" 2>&1)" \
+	&& fail "claims reached PHP Latin-1 encoded (OIDCPassClaimsAs without \"none\")"
+pass "same account, login count increased, real name intact, claims arrived as UTF-8"
 
 printf '\n\033[32mAll OpenID Connect tests passed for %s against %s\033[0m\n' "$IMAGE" "$OIDC_ISSUER"
