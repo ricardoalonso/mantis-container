@@ -403,6 +403,15 @@ out=$(podman run --rm "${oidc_env[@]}" "$IMAGE" bash -c 'apply-parameters.sh >/d
 0
 [{"OidcAuth":5},["administrator","break.glass"]]' ] || fail "unexpected OIDC configuration: $out"
 pass "on: Apache accepts it, module loaded, claims passed as UTF-8, state cookies capped, secret only in a 0600 file, plugin forced on, local users quoted"
+# Behind a proxy: X-Forwarded-Port must not be trusted. mod_auth_openidc then
+# sends https://host:443/oidc/callback, and Keycloak's exact match refuses it
+# ("Invalid parameter: redirect_uri").
+out=$(podman run --rm "${oidc_env[@]}" -e HTTPD_TRUSTED_PROXIES=10.0.0.0/8 "$IMAGE" bash -c \
+	'apply-parameters.sh >/dev/null && grep "^OIDCXForwardedHeaders" /etc/httpd/conf.d/zz-oidc.conf') \
+	|| fail "no OIDCXForwardedHeaders with HTTPD_TRUSTED_PROXIES set: $out"
+[ "$out" = "OIDCXForwardedHeaders X-Forwarded-Proto X-Forwarded-Host" ] \
+	|| fail "unexpected forwarded headers (X-Forwarded-Port puts :443 in the redirect URI): $out"
+pass "behind a proxy: redirect URI from X-Forwarded-Proto and -Host, not -Port"
 # An existing config_inc.php that does not load runtime_inc.php would make
 # MantisBT ignore the plugin silently; the container refuses to start instead.
 mkdir -p "$WORK/oldconfig"

@@ -227,9 +227,12 @@ The startup log shows the result:
 
 - **Behind a reverse proxy** (TLS terminated in front of the container), set
   `HTTPD_TRUSTED_PROXIES` as described in README-usage.md. mod_auth_openidc
-  then builds the redirect URI from `X-Forwarded-Proto`, `X-Forwarded-Host`
-  and `X-Forwarded-Port`. Make sure the proxy sends the first two, or
-  preserves the `Host` header, and sends the port only if it is the public one.
+  then builds the redirect URI from `X-Forwarded-Proto` and `X-Forwarded-Host`.
+  Make sure the proxy sends both, or preserves the `Host` header.
+  `X-Forwarded-Port` is deliberately not trusted: mod_auth_openidc would put
+  it in the URI even when it is the default (`https://host:443/...`), which
+  Keycloak's exact match refuses. mod_auth_openidc logs a warning for each
+  request carrying it; that warning is harmless.
 - **More than one replica.** Set the same `MANTIS_OIDC_CRYPTO_PASSPHRASE` (32
   characters or more) on all of them. The login state and session live in
   cookies encrypted with it, so a login can then finish on any replica. Without

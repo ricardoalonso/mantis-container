@@ -398,8 +398,12 @@ if [ -n "$MANTIS_OIDC_ISSUER" ]; then
 		echo "OIDCStateMaxNumberOfCookies 5 true"
 		if [ -n "$HTTPD_TRUSTED_PROXIES" ]; then
 			# Behind a TLS-terminating proxy the redirect URI must be built
-			# from the public scheme, host and port, not from this container's.
-			echo "OIDCXForwardedHeaders X-Forwarded-Proto X-Forwarded-Host X-Forwarded-Port"
+			# from the public scheme and host, not from this container's.
+			# Not X-Forwarded-Port: mod_auth_openidc then writes the port into
+			# the URI even when it is the default (https://host:443/...), and
+			# an IdP that matches redirect URIs exactly, like Keycloak, refuses
+			# it with "Invalid parameter: redirect_uri".
+			echo "OIDCXForwardedHeaders X-Forwarded-Proto X-Forwarded-Host"
 		fi
 		echo
 		echo "<Location \"$context/oidc/callback\">"
